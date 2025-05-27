@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB Configuration
-MONGO_URI = "mongodb://localhost:27017"
+MONGO_URI = "mongodb://192.168.194.42:32768"
 DB_NAME = "simulation_db"
 
 # Initialize MongoDB client and collection reference
