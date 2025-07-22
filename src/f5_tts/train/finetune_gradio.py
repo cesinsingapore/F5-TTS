@@ -252,7 +252,7 @@ class Slicer:  # https://github.com/RVC-Boss/GPT-SoVITS/blob/main/tools/slicer2.
             samples = waveform
         if samples.shape[0] <= self.min_length:
             return [waveform]
-        rms_list = get_rms(y=samples, frame_length=self.win_size, hop_length=self.hop_size).squeeze(0)
+        rms_list = librosa.feature.rms(y=samples, frame_length=self.win_size, hop_length=self.hop_size).squeeze(0)
         sil_tags = []
         silence_start = None
         clip_start = 0
@@ -306,8 +306,7 @@ class Slicer:  # https://github.com/RVC-Boss/GPT-SoVITS/blob/main/tools/slicer2.
             silence_end = min(total_frames, silence_start + self.max_sil_kept)
             pos = rms_list[silence_start : silence_end + 1].argmin() + silence_start
             sil_tags.append((pos, total_frames + 1))
-        # Apply and return slices.
-        ####音频+起始时间+终止时间
+        # Apply and return slices: [chunk, start, end]
         if len(sil_tags) == 0:
             return [[waveform, 0, int(total_frames * self.hop_size)]]
         else:
@@ -707,7 +706,7 @@ def transcribe_all(name_project, audio_files, language, user=False, progress=gr.
 
             try:
                 text = transcribe(file_segment, language)
-                text = text.lower().strip().replace('"', "")
+                text = text.strip()
 
                 data += f"{name_segment}|{text}\n"
 
@@ -816,7 +815,7 @@ def create_metadata(name_project, ch_tokenizer, progress=gr.Progress()):
             error_files.append([file_audio, "very short text length 3"])
             continue
 
-        text = clear_text(text)
+        text = text.strip()
         text = convert_char_to_pinyin([text], polyphone=True)[0]
 
         audio_path_list.append(file_audio)
@@ -1127,7 +1126,7 @@ def vocab_check(project_name, tokenizer_type):
         if len(sp) != 2:
             continue
 
-        text = sp[1].lower().strip()
+        text = sp[1].strip()
         if tokenizer_type == "pinyin":
             text = convert_char_to_pinyin([text], polyphone=True)[0]
 
@@ -1234,8 +1233,8 @@ def infer(
     with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
         tts_api.infer(
             ref_file=ref_audio,
-            ref_text=ref_text.lower().strip(),
-            gen_text=gen_text.lower().strip(),
+            ref_text=ref_text.strip(),
+            gen_text=gen_text.strip(),
             nfe_step=nfe_step,
             speed=speed,
             remove_silence=remove_silence,
