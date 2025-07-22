@@ -180,10 +180,15 @@ class ChineseTTSProcessor:
         # ✅ Send motion timeline if present
         if motions:
             interval = total_duration / len(motions) if motions else 0
-            motion_timeline = [
-                {"name": m, "start": round(i * interval, 2)}
-                for i, m in enumerate(motions)
-            ]
+            motion_timeline = []
+            for i, m in enumerate(motions):
+                start_time = round(i * interval, 2)
+                end_time = round((i + 1) * interval, 2) if i < len(motions) - 1 else round(total_duration, 2)
+                motion_timeline.append({
+                    "name": m,
+                    "start": start_time,
+                    "end": end_time
+                })
 
             from kafka import KafkaProducer
             import json
@@ -394,10 +399,15 @@ class TTSStreamingProcessor:
         # ✅ Send motion timeline if present
         if motions:
             interval = total_duration / len(motions) if motions else 0
-            motion_timeline = [
-                {"name": m, "start": round(i * interval, 2)}
-                for i, m in enumerate(motions)
-            ]
+            motion_timeline = []
+            for i, m in enumerate(motions):
+                start_time = round(i * interval, 2)
+                end_time = round((i + 1) * interval, 2) if i < len(motions) - 1 else round(total_duration, 2)
+                motion_timeline.append({
+                    "name": m,
+                    "start": start_time,
+                    "end": end_time
+                })
 
             from kafka import KafkaProducer
             import json
