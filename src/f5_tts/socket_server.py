@@ -226,7 +226,6 @@ class ChineseTTSProcessor:
                 "character_id": character_id,
                 "character_name": character_name_from_file
             })
-
             logger.info(f"📤 Motion timeline sent to Kafka: {motion_timeline} with session_id: {session_id}")
 
 class TTSStreamingProcessor:
@@ -366,7 +365,7 @@ class TTSStreamingProcessor:
 
         if self.file_writer_thread is not None:
             self.file_writer_thread.stop()
-        self.file_writer_thread = AudioFileWriterThread(output_file, self.sampling_rate)
+        self.file_writer_thread = AudioFileWriterThread(output_filename, self.sampling_rate)
         self.file_writer_thread.start()
 
         for item in audio_stream:
@@ -437,7 +436,7 @@ class TTSStreamingProcessor:
             )
             filename = os.path.basename(output_file)
             try:
-                parts = filename.replace(".wav", "").split("_")
+                parts = fe_and_filename[1].replace(".wav", "").split("_")
                 if len(parts) >= 3:
                     character_name_from_file = parts[0]
                     session_id = parts[1]
@@ -460,7 +459,6 @@ class TTSStreamingProcessor:
                 "character_id": character_id,
                 "character_name": character_name_from_file
             })
-
             logger.info(f"📤 Motion timeline sent to Kafka: {motion_timeline} with session_id: {session_id}")
         logger.info("✅ Finished sending all English audio chunks to Kafka")
 
@@ -484,15 +482,15 @@ def handle_client(conn, addr, processors):
                     elif "zh" in lang:
                         lang = "zh"
                     else:
-                        lang = "zh"  # default fallback
+                        lang = "zh"  # fallback
 
-                    # ✅ Parse text ||| motion1,motion2 | filename.wav
+                    # ✅ Parse text ||| motions ||| facial ||| filename |||
                     if "|||" in text_with_motion:
                         parts_ = text_with_motion.split("|||")
-                        text_part = parts_[0]
-                        motion_raw = parts_[1] if len(parts_) > 1 else ""
-                        facial_expression = parts_[2] if len(parts_) > 2 else "normal"
-                        output_filename = parts_[3] if len(parts_) > 3 else f"{character_name}_{int(time.time())}.wav"
+                        text_part = parts_[0].strip()
+                        motion_raw = parts_[1].strip() if len(parts_) > 1 else ""
+                        facial_expression = parts_[2].strip() if len(parts_) > 2 else "normal"
+                        output_filename = parts_[3].strip() if len(parts_) > 3 else f"{character_name}_{int(time.time())}.wav"
                     else:
                         text_part = text_with_motion
                         motion_raw = ""
@@ -502,7 +500,7 @@ def handle_client(conn, addr, processors):
                     motions = [m.strip() for m in motion_raw.split(",") if m.strip()]
                     full_text = f"{text_part}|||{','.join(motions)}|||{facial_expression}"
 
-                    logger.info(f"🗣️ Lang: {lang}, Character: {character_name}, Text: {text_part}, Motions: {motions}, Output: {output_filename} , Facial Expression: {facial_expression}")
+                    logger.info(f"🗣️ Lang: {lang}, Character: {character_name}, Text: {text_part}, Motions: {motions}, Facial: {facial_expression}, Output: {output_filename}")
 
                 except ValueError:
                     logger.error("Invalid format. Use: lang|character|text")
