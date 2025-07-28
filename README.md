@@ -128,6 +128,84 @@ See [detailed instructions](src/f5_tts/runtime/triton_trtllm/README.md) for more
 - In order to achieve desired performance, take a moment to read [detailed guidance](src/f5_tts/infer).
 - By properly searching the keywords of problem encountered, [issues](https://github.com/SWivid/F5-TTS/issues?q=is%3Aissue) are very helpful.
 
+
+## 🔌 Real-Time Inference with Socket Streaming
+
+This repository also demonstrates a **real-time TTS pipeline using socket streaming**, ideal for applications requiring **low-latency voice generation with character-driven control**.
+
+### ✅ What It Supports
+
+- **Streaming Audio Output**: Sends synthesized audio chunks incrementally over a socket connection as they're generated.
+- **Multimodal Commands**: Supports extended control fields to drive:
+  - `motion`: gesture actions like `"nod"`, `"wave_left"`, `"shake_head"`
+  - `facial_expression`: expressions like `"smile"`, `"sad"`, `"surprised"`
+  - `character_id` and `character_name`: for multi-agent or NPC setups
+- **Frontend Sync**: Allows the frontend or renderer (e.g., 3D avatar, game engine, or web app) to animate motion and expressions in sync with voice output.
+
+---
+
+### 📤 Input Format
+
+Send a pipe-delimited message to the F5-TTS socket server with this structure:
+<text> ||| <facial_expression> ||| <motion> ||| <character_id> ||| <character_name>
+
+**Example:**
+
+Hello, I'm happy to see you! ||| smile ||| nod ||| char_001 ||| Alice
+
+| Field               | Description                                                                 |
+|--------------------|-----------------------------------------------------------------------------|
+| `text`             | The text to be synthesized                                                  |
+| `facial_expression`| Facial expression to trigger in the UI or 3D model                          |
+| `motion`           | Character body motion or gesture                                            |
+| `character_id`     | Unique identifier to match speaker voice or character logic                |
+| `character_name`   | Display name, useful for frontend UI or speaker labeling                   |
+
+---
+
+### 🖥️ Frontend Integration Example
+
+This input format allows **character-aware** and **emotion-aware** integration with frontend rendering engines:
+
+```js
+// On receiving each streamed audio chunk:
+socket.on("audio_chunk", (chunk) => {
+  playAudioChunk(chunk);             // real-time voice
+  updateCharacterMotion("nod");      // gesture sync
+  setFacialExpression("smile");      // facial sync
+  updateSpeakerName("Alice");        // UI display
+});
+// On receiving full message:
+```
+
+```swift
+
+| Field               | Description                                                                 |
+|--------------------|-----------------------------------------------------------------------------|
+| `text`             | The text to be synthesized                                                  |
+| `facial_expression`| Facial expression to trigger in the UI or 3D model                          |
+| `motion`           | Character body motion or gesture                                            |
+| `character_id`     | Unique identifier to match speaker voice or character logic                |
+| `character_name`   | Display name, useful for frontend UI or speaker labeling                   |
+```
+---
+
+### 🖥️ Frontend Integration Example
+
+This input format allows **character-aware** and **emotion-aware** integration with frontend rendering engines:
+
+```js
+// On receiving each streamed audio chunk:
+socket.on("audio_chunk", (chunk) => {
+  playAudioChunk(chunk);             // real-time voice
+  updateCharacterMotion("nod");      // gesture sync
+  setFacialExpression("smile");      // facial sync
+  updateSpeakerName("Alice");        // UI display
+});
+
+```
+This allows seamless connection between voice, animation, and character logic.
+___
 ### 1. Gradio App
 
 Currently supported features:

@@ -482,7 +482,7 @@ def handle_client(conn, addr, processors):
                     elif "zh" in lang:
                         lang = "zh"
                     else:
-                        lang = "zh"  # fallback
+                        lang = "en"  # fallback
 
                     # ✅ Parse text ||| motions ||| facial ||| filename |||
                     if "|||" in text_with_motion:
