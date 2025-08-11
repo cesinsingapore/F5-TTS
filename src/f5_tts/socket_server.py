@@ -567,7 +567,7 @@ if __name__ == "__main__":
                 ref_audio="./tests/ref_audio/ref2.mp3",
                 ref_text="I'm not sure, you may want to check with the security of ion orchard",
                 kafka_topic="audio_chunks",
-                kafka_servers=["192.168.194.42:29092"]
+                kafka_servers=["192.168.194.188:29092"]
             ),
             "zh": ChineseTTSProcessor(
                 ckpt_file="ckpts/chinese/model_1200000.pt",
@@ -575,7 +575,7 @@ if __name__ == "__main__":
                 ref_audio="./tests/ref_audio/ref_ch.mp3",
                 ref_text="我不确定，你可能需要向 Ion Orchard 的保安部门查询一下。",
                 kafka_topic="audio_chunks_zh",
-                kafka_servers=["192.168.194.42:29092"]
+                kafka_servers=["192.168.194.188:29092"]
             )
         }
 
