@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # MongoDB Configuration
-MONGO_URI = "mongodb://192.168.194.42:32768"
+MONGO_URI = "mongodb://192.168.194.188:27017"
 DB_NAME = "simulation_db"
 
 # Initialize MongoDB client and collection reference
@@ -198,7 +198,7 @@ class ChineseTTSProcessor:
             from kafka import KafkaProducer
             import json
             motion_producer = KafkaProducer(
-                bootstrap_servers=["192.168.194.42:29092"],
+                bootstrap_servers=["192.168.194.188:29092"],
                 value_serializer=lambda v: json.dumps(v).encode("utf-8")
             )
             filename = os.path.basename(output_file)
@@ -431,7 +431,7 @@ class TTSStreamingProcessor:
             from kafka import KafkaProducer
             import json
             motion_producer = KafkaProducer(
-                bootstrap_servers=["192.168.194.42:29092"],
+                bootstrap_servers=["192.168.194.188:29092"],
                 value_serializer=lambda v: json.dumps(v).encode("utf-8")
             )
             filename = os.path.basename(output_file)
