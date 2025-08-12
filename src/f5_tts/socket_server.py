@@ -562,7 +562,7 @@ if __name__ == "__main__":
     try:
         processors = {
             "en": TTSStreamingProcessor(
-                ckpt_file="ckpts/mix-singlish/model_255000.pt",
+                ckpt_file="ckpts/mix-singlish/model_258000.pt",
                 vocab_file="ckpts/mix-singlish/vocab.txt",
                 ref_audio="./tests/ref_audio/ref2.mp3",
                 ref_text="I'm not sure, you may want to check with the security of ion orchard",
