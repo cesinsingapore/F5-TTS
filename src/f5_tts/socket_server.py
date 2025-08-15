@@ -320,7 +320,7 @@ class ChineseTTSProcessor:
             from kafka import KafkaProducer
             import json
             motion_producer = KafkaProducer(
-                bootstrap_servers=["192.168.194.188:29092"],
+                bootstrap_servers=["192.168.1.69:29092"],
                 value_serializer=lambda v: json.dumps(v).encode("utf-8")
             )
             filename = os.path.basename(output_file)
