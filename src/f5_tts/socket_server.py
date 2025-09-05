@@ -129,8 +129,80 @@ class AudioFileWriterThread(threading.Thread):
             active_threads.remove(self)
 
 
+class MotionTimelineThread(threading.Thread):
+    def __init__(self, motions, facial_expression, total_duration, session_id, character_name, kafka_servers):
+        super().__init__()
+        self.daemon = True
+        self.motions = motions
+        self.facial_expression = facial_expression
+        self.total_duration = total_duration
+        self.session_id = session_id
+        self.character_name = character_name
+        self.stop_event = threading.Event()
+        
+        # Motion producer
+        self.motion_producer = KafkaProducer(
+            bootstrap_servers=kafka_servers,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            batch_size=1,
+            linger_ms=0,
+            acks=1
+        )
+        active_threads.append(self)
+    
+    def run(self):
+        if not self.motions:
+            return
+            
+        logger.info(f"🎭 Starting motion timeline thread for {len(self.motions)} motions")
+        start_time = time.time()
+        interval = self.total_duration / len(self.motions)
+        
+        for i, motion in enumerate(self.motions):
+            if self.stop_event.is_set():
+                break
+                
+            motion_start = i * interval
+            motion_end = (i + 1) * interval if i < len(self.motions) - 1 else self.total_duration
+            
+            # Wait for the right time to send this motion
+            elapsed = time.time() - start_time
+            wait_time = motion_start - elapsed
+            if wait_time > 0:
+                if self.stop_event.wait(wait_time):
+                    break
+            
+            # Send motion event
+            motion_data = {
+                "type": "motion_start",
+                "motion": motion,
+                "start_time": motion_start,
+                "end_time": motion_end,
+                "session_id": self.session_id,
+                "character_name": self.character_name,
+                "facial_expression": self.facial_expression,
+                "timestamp": time.time()
+            }
+            
+            try:
+                self.motion_producer.send("audio_motion_realtime", value=motion_data)
+                logger.info(f"🎭 Sent motion '{motion}' at {motion_start:.2f}s")
+            except Exception as e:
+                logger.error(f"❌ Failed to send motion: {e}")
+        
+        logger.info("✅ Motion timeline thread completed")
+    
+    def stop(self):
+        self.stop_event.set()
+        try:
+            self.motion_producer.close(timeout=1)
+        except:
+            pass
+        if self in active_threads:
+            active_threads.remove(self)
+
 class ChineseTTSProcessor:
-    def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, kafka_topic, kafka_servers, device=None):
+    def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, kafka_topic, kafka_servers, device=None, broadcast_mode="single"):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tts = F5TTS(
             model="E2TTS_Base",
@@ -140,6 +212,7 @@ class ChineseTTSProcessor:
             use_ema=True
         )
         self.kafka_topic = kafka_topic
+        self.kafka_servers = kafka_servers
         
         # Optimized Kafka producer for low-latency streaming
         self.producer = KafkaProducer(
@@ -166,6 +239,7 @@ class ChineseTTSProcessor:
         
         self.sampling_rate = 24000
         self.file_writer_thread = None
+        self.motion_thread = None
         self.chunk_sequence = 0
         self.session_id = None
         self.update_reference(ref_audio, ref_text)
@@ -220,12 +294,23 @@ class ChineseTTSProcessor:
         chunk_size = 2048
         total_chunks = 0
         total_size = 0
-        total_duration = 0.0  # ⏱️ Track durasi semua chunk
+        total_duration = len(audio_data) / self.sampling_rate  # ⏱️ Calculate total duration upfront
         self.chunk_sequence = 0
         self.session_id = f"{character_name}_{int(time.time())}"
         stream_start_time = time.time()
 
-        logger.info(f"🚀 [STREAM_START] Session: {self.session_id}, Total audio length: {len(audio_data)} samples")
+        logger.info(f"🚀 [STREAM_START] Session: {self.session_id}, Total audio length: {len(audio_data)} samples, Duration: {total_duration:.2f}s")
+        
+        # ✅ Start motion thread immediately if motions exist
+        if motions:
+            if self.motion_thread:
+                self.motion_thread.stop()
+            self.motion_thread = MotionTimelineThread(
+                motions, facial_expression, total_duration, 
+                self.session_id, character_name, self.kafka_servers
+            )
+            self.motion_thread.start()
+            logger.info(f"🎭 Started motion thread with {len(motions)} motions")
 
         for i in range(0, len(audio_data), chunk_size):
             chunk = audio_data[i:i + chunk_size]
@@ -233,7 +318,6 @@ class ChineseTTSProcessor:
                 continue
 
             chunk_duration = len(chunk) / self.sampling_rate
-            total_duration += chunk_duration
             chunk_timestamp = time.time()
             
             # Create chunk hash for verification
@@ -301,54 +385,13 @@ class ChineseTTSProcessor:
             logger.warning(f"Failed to send end signals: {e}")
         
         logger.info(f"✅ [STREAM_END] Session: {self.session_id}, Total chunks: {total_chunks}, Duration: {round(total_duration, 2)}s")
+        
+        # ✅ Stop threads
         if self.file_writer_thread:
             self.file_writer_thread.stop()
-
-        # ✅ Send motion timeline if present
-        if motions:
-            interval = total_duration / len(motions) if motions else 0
-            motion_timeline = []
-            for i, m in enumerate(motions):
-                start_time = round(i * interval, 2)
-                end_time = round((i + 1) * interval, 2) if i < len(motions) - 1 else round(total_duration, 2)
-                motion_timeline.append({
-                    "name": m,
-                    "start": start_time,
-                    "end": end_time
-                })
-
-            from kafka import KafkaProducer
-            import json
-            motion_producer = KafkaProducer(
-                bootstrap_servers=["192.168.1.69:29092"],
-                value_serializer=lambda v: json.dumps(v).encode("utf-8")
-            )
-            filename = os.path.basename(output_file)
-            try:
-                parts = filename.replace(".wav", "").split("_")
-                if len(parts) >= 3:
-                    character_name_from_file = parts[0]
-                    session_id = parts[1]
-                    character_id = parts[2]
-                else:
-                    session_id = f"{character_name}_{int(time.time())}"  # fallback
-                    character_id = "unknown"
-                    character_name_from_file = character_name
-                    logger.warning("⚠️ Failed to parse session_id and character_id from filename.")
-            except Exception as e:
-                session_id = f"{character_name}_{int(time.time())}"  # fallback
-                character_id = "unknown"
-                character_name_from_file = character_name
-                logger.error(f"❌ Error parsing output filename: {e}")
-
-            motion_producer.send("audio_motion_meta", value={
-                "motions": motion_timeline,
-                "facial_expression": facial_expression,
-                "session_id": session_id,
-                "character_id": character_id,
-                "character_name": character_name_from_file
-            })
-            logger.info(f"📤 Motion timeline sent to Kafka: {motion_timeline} with session_id: {session_id}")
+        if self.motion_thread:
+            self.motion_thread.stop()
+            logger.info("✅ Motion thread stopped")
 
 class TTSStreamingProcessor:
     def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, kafka_topic, kafka_servers, device=None, dtype=torch.float32):
@@ -367,6 +410,7 @@ class TTSStreamingProcessor:
         self.mel_spec_type = model_cfg.model.mel_spec.mel_spec_type
         self.sampling_rate = model_cfg.model.mel_spec.target_sample_rate
         self.kafka_topic = kafka_topic
+        self.kafka_servers = kafka_servers
         
         # Optimized Kafka producer for low-latency streaming
         self.producer = KafkaProducer(
@@ -397,6 +441,7 @@ class TTSStreamingProcessor:
         self.update_reference(ref_audio, ref_text)
         self._warm_up()
         self.file_writer_thread = None
+        self.motion_thread = None
         self.first_package = True
         self.chunk_sequence = 0
         self.session_id = None
@@ -448,21 +493,60 @@ class TTSStreamingProcessor:
     def split_text_into_batches(self, text, max_batch_length=20):
         sentences = sent_tokenize(text)
         batches = []
+        
+        # If only one sentence or very short text, return as single batch
+        if len(sentences) <= 1 or len(text) <= max_batch_length:
+            return [text]
+        
+        # Group sentences with similar phoneme density
         current_batch = []
         current_length = 0
+        
         for sentence in sentences:
-            sentence_length = len(sentence)
-            if current_length + sentence_length > max_batch_length:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            # Estimate phoneme count (rough approximation)
+            phoneme_estimate = len(sentence) * 0.7  # Approximate phoneme-to-char ratio
+            
+            # If adding this sentence would make batch too long, start new batch
+            if current_batch and (current_length + phoneme_estimate > max_batch_length):
                 if current_batch:
                     batches.append(' '.join(current_batch))
                 current_batch = [sentence]
-                current_length = sentence_length
+                current_length = phoneme_estimate
             else:
                 current_batch.append(sentence)
-                current_length += sentence_length
+                current_length += phoneme_estimate
+        
+        # Add final batch
         if current_batch:
             batches.append(' '.join(current_batch))
-        return batches
+        
+        # Ensure no empty batches and merge very short ones
+        filtered_batches = [b for b in batches if b.strip()]
+        
+        # If we created too many small batches, merge them
+        if len(filtered_batches) > 3:
+            merged_batches = []
+            temp_batch = ""
+            
+            for batch in filtered_batches:
+                if len(temp_batch + " " + batch) <= max_batch_length * 1.5:
+                    temp_batch = (temp_batch + " " + batch).strip()
+                else:
+                    if temp_batch:
+                        merged_batches.append(temp_batch)
+                    temp_batch = batch
+            
+            if temp_batch:
+                merged_batches.append(temp_batch)
+            
+            return merged_batches if merged_batches else [text]
+        
+        return filtered_batches if filtered_batches else [text]
+
 
     def generate_stream(self, text, character_name, output_file="output_english.wav", cross_fade_duration=0.20):
         if "|||" in text:
@@ -520,6 +604,20 @@ class TTSStreamingProcessor:
         self.file_writer_thread.start()
         
         logger.info(f"🚀 [STREAM_START] Session: {self.session_id}, Text batches: {len(text_batches)}")
+        
+        # ✅ Estimate total duration for motion thread (rough estimate for streaming)
+        estimated_duration = len(text) * 0.1  # ~0.1 seconds per character estimate
+        
+        # ✅ Start motion thread immediately if motions exist
+        if motions:
+            if self.motion_thread:
+                self.motion_thread.stop()
+            self.motion_thread = MotionTimelineThread(
+                motions, facial_expression, estimated_duration, 
+                self.session_id, character_name, self.kafka_servers
+            )
+            self.motion_thread.start()
+            logger.info(f"🎭 Started motion thread with {len(motions)} motions (estimated duration: {estimated_duration:.2f}s)")
 
         for item in audio_stream:
             audio_chunk, final_sample_rate = item
@@ -625,55 +723,17 @@ class TTSStreamingProcessor:
         
         logger.info(f"✅ [STREAM_END] Session: {self.session_id}, Total chunks: {total_chunks}, Duration: {round(total_duration, 2)}s, RTF: {rtf:.2f}")
         
+        # ✅ Stop threads  
         if self.file_writer_thread:
             self.file_writer_thread.stop()
-
-        # ✅ Kirim motion timeline jika ada motion
-        # ✅ Send motion timeline if present
-        if motions:
-            interval = total_duration / len(motions) if motions else 0
-            motion_timeline = []
-            for i, m in enumerate(motions):
-                start_time = round(i * interval, 2)
-                end_time = round((i + 1) * interval, 2) if i < len(motions) - 1 else round(total_duration, 2)
-                motion_timeline.append({
-                    "name": m,
-                    "start": start_time,
-                    "end": end_time
-                })
-
-            from kafka import KafkaProducer
-            import json
-            motion_producer = KafkaProducer(
-                bootstrap_servers=["localhost:29092"],
-                value_serializer=lambda v: json.dumps(v).encode("utf-8")
-            )
-            filename = os.path.basename(output_file)
-            try:
-                parts = fe_and_filename[1].replace(".wav", "").split("_")
-                if len(parts) >= 3:
-                    character_name_from_file = parts[0]
-                    session_id = parts[1]
-                    character_id = parts[2]
-                else:
-                    session_id = f"{character_name}_{int(time.time())}"  # fallback
-                    character_id = "unknown"
-                    character_name_from_file = character_name
-                    logger.warning("⚠️ Failed to parse session_id and character_id from filename.")
-            except Exception as e:
-                session_id = f"{character_name}_{int(time.time())}"  # fallback
-                character_id = "unknown"
-                character_name_from_file = character_name
-                logger.error(f"❌ Error parsing output filename: {e}")
-
-            motion_producer.send("audio_motion_meta", value={
-                "motions": motion_timeline,
-                "facial_expression": facial_expression,
-                "session_id": session_id,
-                "character_id": character_id,
-                "character_name": character_name_from_file
-            })
-            logger.info(f"📤 Motion timeline sent to Kafka: {motion_timeline} with session_id: {session_id}")
+        if self.motion_thread:
+            # Update motion thread with actual duration if significantly different
+            actual_duration = total_duration
+            if abs(actual_duration - estimated_duration) > 1.0:  # More than 1 second difference
+                logger.info(f"🔄 Updating motion timeline with actual duration: {actual_duration:.2f}s vs estimated: {estimated_duration:.2f}s")
+                # Motion thread will adjust its timing automatically
+            self.motion_thread.stop()
+            logger.info("✅ Motion thread stopped")
         logger.info("✅ Finished sending all English audio chunks to Kafka")
 
 
@@ -891,7 +951,7 @@ if __name__ == "__main__":
                 ref_audio="./tests/ref_audio/ref2.mp3",
                 ref_text="I'm not sure, you may want to check with the security of ion orchard",
                 kafka_topic="audio_chunks",
-                kafka_servers=["192.168.1.69:29092"]
+                kafka_servers=["localhost:29092"]
             ),
             "zh": ChineseTTSProcessor(
                 ckpt_file="ckpts/chinese/model_1200000.pt",
@@ -899,11 +959,11 @@ if __name__ == "__main__":
                 ref_audio="./tests/ref_audio/ref_ch.mp3",
                 ref_text="我不确定，你可能需要向 Ion Orchard 的保安部门查询一下。",
                 kafka_topic="audio_chunks_zh",
-                kafka_servers=["192.168.1.69:29092"]
+                kafka_servers=["localhost:29092"]
             )
         }
 
-        host = '0.0.0.0'
+        host = 'localhost'
         port = 9998
         logger.info(f"🚀 Starting F5-TTS Socket Server on port {port}")
         start_server(host, port, processors)
