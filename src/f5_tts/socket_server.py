@@ -62,6 +62,7 @@ client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 characters_collection = db["characters"]
 
+
 class AudioFileWriterThread(threading.Thread):
     def __init__(self, output_file, sampling_rate):
         super().__init__()
@@ -139,7 +140,7 @@ class MotionTimelineThread(threading.Thread):
         self.session_id = session_id
         self.character_name = character_name
         self.stop_event = threading.Event()
-        
+
         # Motion producer
         self.motion_producer = KafkaProducer(
             bootstrap_servers=kafka_servers,
@@ -149,29 +150,29 @@ class MotionTimelineThread(threading.Thread):
             acks=1
         )
         active_threads.append(self)
-    
+
     def run(self):
         if not self.motions:
             return
-            
+
         logger.info(f"🎭 Starting motion timeline thread for {len(self.motions)} motions")
         start_time = time.time()
         interval = self.total_duration / len(self.motions)
-        
+
         for i, motion in enumerate(self.motions):
             if self.stop_event.is_set():
                 break
-                
+
             motion_start = i * interval
             motion_end = (i + 1) * interval if i < len(self.motions) - 1 else self.total_duration
-            
+
             # Wait for the right time to send this motion
             elapsed = time.time() - start_time
             wait_time = motion_start - elapsed
             if wait_time > 0:
                 if self.stop_event.wait(wait_time):
                     break
-            
+
             # Send motion event
             motion_data = {
                 "type": "motion_start",
@@ -183,15 +184,15 @@ class MotionTimelineThread(threading.Thread):
                 "facial_expression": self.facial_expression,
                 "timestamp": time.time()
             }
-            
+
             try:
                 self.motion_producer.send("audio_motion_realtime", value=motion_data)
                 logger.info(f"🎭 Sent motion '{motion}' at {motion_start:.2f}s")
             except Exception as e:
                 logger.error(f"❌ Failed to send motion: {e}")
-        
+
         logger.info("✅ Motion timeline thread completed")
-    
+
     def stop(self):
         self.stop_event.set()
         try:
@@ -201,8 +202,10 @@ class MotionTimelineThread(threading.Thread):
         if self in active_threads:
             active_threads.remove(self)
 
+
 class ChineseTTSProcessor:
-    def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, kafka_topic, kafka_servers, device=None, broadcast_mode="single"):
+    def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, kafka_topic, kafka_servers, device=None,
+                 broadcast_mode="single"):
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.tts = F5TTS(
             model="E2TTS_Base",
@@ -213,21 +216,21 @@ class ChineseTTSProcessor:
         )
         self.kafka_topic = kafka_topic
         self.kafka_servers = kafka_servers
-        
+
         # Optimized Kafka producer for low-latency streaming
         self.producer = KafkaProducer(
             bootstrap_servers=kafka_servers,
             value_serializer=lambda v: struct.pack(f'{len(v)}f', *v),
             # Low-latency optimizations
             batch_size=1,  # Send immediately, don't batch
-            linger_ms=0,   # Don't wait to batch
-            acks=1,        # Only wait for leader acknowledgment
+            linger_ms=0,  # Don't wait to batch
+            acks=1,  # Only wait for leader acknowledgment
             compression_type=None,  # No compression for speed
             max_in_flight_requests_per_connection=10,
             buffer_memory=33554432,  # 32MB buffer
             retries=3
         )
-        
+
         # Debug producer for metadata logging
         self.debug_producer = KafkaProducer(
             bootstrap_servers=kafka_servers,
@@ -236,14 +239,14 @@ class ChineseTTSProcessor:
             linger_ms=0,
             acks=1
         )
-        
+
         self.sampling_rate = 24000
         self.file_writer_thread = None
         self.motion_thread = None
         self.chunk_sequence = 0
         self.session_id = None
         self.update_reference(ref_audio, ref_text)
-        
+
         # Keep track of producers for cleanup
         active_threads.extend([self.producer, self.debug_producer])
 
@@ -299,14 +302,15 @@ class ChineseTTSProcessor:
         self.session_id = f"{character_name}_{int(time.time())}"
         stream_start_time = time.time()
 
-        logger.info(f"🚀 [STREAM_START] Session: {self.session_id}, Total audio length: {len(audio_data)} samples, Duration: {total_duration:.2f}s")
-        
+        logger.info(
+            f"🚀 [STREAM_START] Session: {self.session_id}, Total audio length: {len(audio_data)} samples, Duration: {total_duration:.2f}s")
+
         # ✅ Start motion thread immediately if motions exist
         if motions:
             if self.motion_thread:
                 self.motion_thread.stop()
             self.motion_thread = MotionTimelineThread(
-                motions, facial_expression, total_duration, 
+                motions, facial_expression, total_duration,
                 self.session_id, character_name, self.kafka_servers
             )
             self.motion_thread.start()
@@ -319,15 +323,15 @@ class ChineseTTSProcessor:
 
             chunk_duration = len(chunk) / self.sampling_rate
             chunk_timestamp = time.time()
-            
+
             # Create chunk hash for verification
             chunk_bytes = chunk.tobytes()
             chunk_hash = hashlib.md5(chunk_bytes).hexdigest()[:8]
-            
+
             # Send audio chunk to Kafka
             self.file_writer_thread.add_chunk(chunk)
             future = self.producer.send(self.kafka_topic, value=chunk)
-            
+
             # Log detailed chunk info for debugging
             chunk_info = {
                 "session_id": self.session_id,
@@ -343,20 +347,22 @@ class ChineseTTSProcessor:
                 "language": "zh",
                 "character": character_name
             }
-            
+
             # Send debug info to separate topic
             self.debug_producer.send(f"{self.kafka_topic}_debug", value=chunk_info)
-            
+
             total_chunks += 1
             total_size += len(chunk)
             self.chunk_sequence += 1
-            
-            logger.info(f"📤 [CHUNK_SENT] Seq:{self.chunk_sequence}, Size:{len(chunk)}, Hash:{chunk_hash}, Offset:{chunk_info['offset_ms']}ms")
-            
+
+            logger.info(
+                f"📤 [CHUNK_SENT] Seq:{self.chunk_sequence}, Size:{len(chunk)}, Hash:{chunk_hash}, Offset:{chunk_info['offset_ms']}ms")
+
             # Check if send was successful
             try:
                 record_metadata = future.get(timeout=1)
-                logger.debug(f"✅ Chunk {self.chunk_sequence} delivered to partition {record_metadata.partition} at offset {record_metadata.offset}")
+                logger.debug(
+                    f"✅ Chunk {self.chunk_sequence} delivered to partition {record_metadata.partition} at offset {record_metadata.offset}")
             except Exception as e:
                 logger.error(f"❌ Failed to send chunk {self.chunk_sequence}: {e}")
 
@@ -376,16 +382,17 @@ class ChineseTTSProcessor:
             "language": "zh",
             "character": character_name
         }
-        
+
         # Send end signals with timeout
         try:
             self.producer.send(self.kafka_topic, value=[]).get(timeout=1)
             self.debug_producer.send(f"{self.kafka_topic}_debug", value=end_info).get(timeout=1)
         except Exception as e:
             logger.warning(f"Failed to send end signals: {e}")
-        
-        logger.info(f"✅ [STREAM_END] Session: {self.session_id}, Total chunks: {total_chunks}, Duration: {round(total_duration, 2)}s")
-        
+
+        logger.info(
+            f"✅ [STREAM_END] Session: {self.session_id}, Total chunks: {total_chunks}, Duration: {round(total_duration, 2)}s")
+
         # ✅ Stop threads
         if self.file_writer_thread:
             self.file_writer_thread.stop()
@@ -393,8 +400,10 @@ class ChineseTTSProcessor:
             self.motion_thread.stop()
             logger.info("✅ Motion thread stopped")
 
+
 class TTSStreamingProcessor:
-    def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, kafka_topic, kafka_servers, device=None, dtype=torch.float32):
+    def __init__(self, ckpt_file, vocab_file, ref_audio, ref_text, kafka_topic, kafka_servers, device=None,
+                 dtype=torch.float32):
         self.device = device or (
             "cuda"
             if torch.cuda.is_available()
@@ -411,21 +420,21 @@ class TTSStreamingProcessor:
         self.sampling_rate = model_cfg.model.mel_spec.target_sample_rate
         self.kafka_topic = kafka_topic
         self.kafka_servers = kafka_servers
-        
+
         # Optimized Kafka producer for low-latency streaming
         self.producer = KafkaProducer(
             bootstrap_servers=kafka_servers,
             value_serializer=lambda v: struct.pack(f'{len(v)}f', *v),
             # Low-latency optimizations
             batch_size=1,  # Send immediately, don't batch
-            linger_ms=0,   # Don't wait to batch
-            acks=1,        # Only wait for leader acknowledgment
+            linger_ms=0,  # Don't wait to batch
+            acks=1,  # Only wait for leader acknowledgment
             compression_type=None,  # No compression for speed
             max_in_flight_requests_per_connection=10,
             buffer_memory=33554432,  # 32MB buffer
             retries=3
         )
-        
+
         # Debug producer for metadata logging
         self.debug_producer = KafkaProducer(
             bootstrap_servers=kafka_servers,
@@ -434,7 +443,7 @@ class TTSStreamingProcessor:
             linger_ms=0,
             acks=1
         )
-        
+
         self.model = self.load_ema_model(ckpt_file, vocab_file, dtype)
         self.vocoder = self.load_vocoder_model()
 
@@ -445,7 +454,7 @@ class TTSStreamingProcessor:
         self.first_package = True
         self.chunk_sequence = 0
         self.session_id = None
-        
+
         # Keep track of producers for cleanup
         active_threads.extend([self.producer, self.debug_producer])
 
@@ -478,14 +487,14 @@ class TTSStreamingProcessor:
         logger.info("Warming up the model...")
         gen_text = "Warm-up text for the model."
         for _ in infer_batch_process(
-            (self.audio, self.sr),
-            self.ref_text,
-            [gen_text],
-            self.model,
-            self.vocoder,
-            progress=None,
-            device=self.device,
-            streaming=True,
+                (self.audio, self.sr),
+                self.ref_text,
+                [gen_text],
+                self.model,
+                self.vocoder,
+                progress=None,
+                device=self.device,
+                streaming=True,
         ):
             pass
         logger.info("Warm-up completed.")
@@ -493,23 +502,23 @@ class TTSStreamingProcessor:
     def split_text_into_batches(self, text, max_batch_length=20):
         sentences = sent_tokenize(text)
         batches = []
-        
+
         # If only one sentence or very short text, return as single batch
         if len(sentences) <= 1 or len(text) <= max_batch_length:
             return [text]
-        
+
         # Group sentences with similar phoneme density
         current_batch = []
         current_length = 0
-        
+
         for sentence in sentences:
             sentence = sentence.strip()
             if not sentence:
                 continue
-                
+
             # Estimate phoneme count (rough approximation)
             phoneme_estimate = len(sentence) * 0.7  # Approximate phoneme-to-char ratio
-            
+
             # If adding this sentence would make batch too long, start new batch
             if current_batch and (current_length + phoneme_estimate > max_batch_length):
                 if current_batch:
@@ -519,19 +528,19 @@ class TTSStreamingProcessor:
             else:
                 current_batch.append(sentence)
                 current_length += phoneme_estimate
-        
+
         # Add final batch
         if current_batch:
             batches.append(' '.join(current_batch))
-        
+
         # Ensure no empty batches and merge very short ones
         filtered_batches = [b for b in batches if b.strip()]
-        
+
         # If we created too many small batches, merge them
         if len(filtered_batches) > 3:
             merged_batches = []
             temp_batch = ""
-            
+
             for batch in filtered_batches:
                 if len(temp_batch + " " + batch) <= max_batch_length * 1.5:
                     temp_batch = (temp_batch + " " + batch).strip()
@@ -539,14 +548,13 @@ class TTSStreamingProcessor:
                     if temp_batch:
                         merged_batches.append(temp_batch)
                     temp_batch = batch
-            
+
             if temp_batch:
                 merged_batches.append(temp_batch)
-            
-            return merged_batches if merged_batches else [text]
-        
-        return filtered_batches if filtered_batches else [text]
 
+            return merged_batches if merged_batches else [text]
+
+        return filtered_batches if filtered_batches else [text]
 
     def generate_stream(self, text, character_name, output_file="output_english.wav", cross_fade_duration=0.20):
         if "|||" in text:
@@ -602,22 +610,23 @@ class TTSStreamingProcessor:
             self.file_writer_thread.stop()
         self.file_writer_thread = AudioFileWriterThread(output_filename, self.sampling_rate)
         self.file_writer_thread.start()
-        
+
         logger.info(f"🚀 [STREAM_START] Session: {self.session_id}, Text batches: {len(text_batches)}")
-        
+
         # ✅ Estimate total duration for motion thread (rough estimate for streaming)
         estimated_duration = len(text) * 0.1  # ~0.1 seconds per character estimate
-        
+
         # ✅ Start motion thread immediately if motions exist
         if motions:
             if self.motion_thread:
                 self.motion_thread.stop()
             self.motion_thread = MotionTimelineThread(
-                motions, facial_expression, estimated_duration, 
+                motions, facial_expression, estimated_duration,
                 self.session_id, character_name, self.kafka_servers
             )
             self.motion_thread.start()
-            logger.info(f"🎭 Started motion thread with {len(motions)} motions (estimated duration: {estimated_duration:.2f}s)")
+            logger.info(
+                f"🎭 Started motion thread with {len(motions)} motions (estimated duration: {estimated_duration:.2f}s)")
 
         for item in audio_stream:
             audio_chunk, final_sample_rate = item
@@ -647,11 +656,11 @@ class TTSStreamingProcessor:
                 chunk_size = len(audio_chunk)
                 total_chunks += 1
                 total_size += chunk_size
-                
+
                 # Create chunk hash for verification
                 chunk_bytes = audio_chunk.tobytes()
                 chunk_hash = hashlib.md5(chunk_bytes).hexdigest()[:8]
-                
+
                 # Log detailed chunk info for debugging
                 chunk_info = {
                     "session_id": self.session_id,
@@ -668,22 +677,24 @@ class TTSStreamingProcessor:
                     "character": character_name,
                     "cross_faded": previous_chunk is not None
                 }
-                
+
                 # Send debug info to separate topic
                 self.debug_producer.send(f"{self.kafka_topic}_debug", value=chunk_info)
-                
-                logger.info(f"📤 [CHUNK_SENT] Seq:{self.chunk_sequence}, Size:{chunk_size}, Hash:{chunk_hash}, Offset:{chunk_info['offset_ms']}ms")
-                
+
+                logger.info(
+                    f"📤 [CHUNK_SENT] Seq:{self.chunk_sequence}, Size:{chunk_size}, Hash:{chunk_hash}, Offset:{chunk_info['offset_ms']}ms")
+
                 # Send audio chunk to Kafka
                 future = self.producer.send(self.kafka_topic, value=audio_chunk)
-                
+
                 # Check if send was successful
                 try:
                     record_metadata = future.get(timeout=1)
-                    logger.debug(f"✅ Chunk {self.chunk_sequence} delivered to partition {record_metadata.partition} at offset {record_metadata.offset}")
+                    logger.debug(
+                        f"✅ Chunk {self.chunk_sequence} delivered to partition {record_metadata.partition} at offset {record_metadata.offset}")
                 except Exception as e:
                     logger.error(f"❌ Failed to send chunk {self.chunk_sequence}: {e}")
-                
+
                 self.file_writer_thread.add_chunk(audio_chunk)
                 self.chunk_sequence += 1
 
@@ -692,7 +703,7 @@ class TTSStreamingProcessor:
         generation_time = end_time - start_time
         audio_duration = total_size / self.sampling_rate if self.sampling_rate > 0 else 0
         rtf = generation_time / audio_duration if audio_duration > 0 else float('inf')
-        
+
         # Send end-of-stream marker
         end_timestamp = time.time()
         end_info = {
@@ -710,27 +721,29 @@ class TTSStreamingProcessor:
             "character": character_name,
             "rtf": rtf
         }
-        
+
         logger.info(f"Total chunks produced: {total_chunks}, Total size: {total_size} floats")
         logger.info(f"Real-Time Factor (RTF): {rtf:.2f}")
-        
+
         # Send end signals with timeout
         try:
             self.producer.send(self.kafka_topic, value=[]).get(timeout=1)
             self.debug_producer.send(f"{self.kafka_topic}_debug", value=end_info).get(timeout=1)
         except Exception as e:
             logger.warning(f"Failed to send end signals: {e}")
-        
-        logger.info(f"✅ [STREAM_END] Session: {self.session_id}, Total chunks: {total_chunks}, Duration: {round(total_duration, 2)}s, RTF: {rtf:.2f}")
-        
-        # ✅ Stop threads  
+
+        logger.info(
+            f"✅ [STREAM_END] Session: {self.session_id}, Total chunks: {total_chunks}, Duration: {round(total_duration, 2)}s, RTF: {rtf:.2f}")
+
+        # ✅ Stop threads
         if self.file_writer_thread:
             self.file_writer_thread.stop()
         if self.motion_thread:
             # Update motion thread with actual duration if significantly different
             actual_duration = total_duration
             if abs(actual_duration - estimated_duration) > 1.0:  # More than 1 second difference
-                logger.info(f"🔄 Updating motion timeline with actual duration: {actual_duration:.2f}s vs estimated: {estimated_duration:.2f}s")
+                logger.info(
+                    f"🔄 Updating motion timeline with actual duration: {actual_duration:.2f}s vs estimated: {estimated_duration:.2f}s")
                 # Motion thread will adjust its timing automatically
             self.motion_thread.stop()
             logger.info("✅ Motion thread stopped")
@@ -741,12 +754,12 @@ def handle_client(conn, addr, processors):
     client_thread = threading.current_thread()
     # Note: Cannot set daemon on already running thread
     active_threads.append(client_thread)
-    
+
     try:
         with conn:
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             conn.settimeout(1.0)  # 1 second timeout for recv operations
-            
+
             while not shutdown_flag.is_set():
                 try:
                     data = conn.recv(1024)
@@ -776,7 +789,8 @@ def handle_client(conn, addr, processors):
                         text_part = parts_[0].strip()
                         motion_raw = parts_[1].strip() if len(parts_) > 1 else ""
                         facial_expression = parts_[2].strip() if len(parts_) > 2 else "normal"
-                        output_filename = parts_[3].strip() if len(parts_) > 3 else f"{character_name}_{int(time.time())}.wav"
+                        output_filename = parts_[3].strip() if len(
+                            parts_) > 3 else f"{character_name}_{int(time.time())}.wav"
                     else:
                         text_part = text_with_motion
                         motion_raw = ""
@@ -786,7 +800,8 @@ def handle_client(conn, addr, processors):
                     motions = [m.strip() for m in motion_raw.split(",") if m.strip()]
                     full_text = f"{text_part}|||{','.join(motions)}|||{facial_expression}"
 
-                    logger.info(f"🗣️ Lang: {lang}, Character: {character_name}, Text: {text_part}, Motions: {motions}, Facial: {facial_expression}, Output: {output_filename}")
+                    logger.info(
+                        f"🗣️ Lang: {lang}, Character: {character_name}, Text: {text_part}, Motions: {motions}, Facial: {facial_expression}, Output: {output_filename}")
 
                 except ValueError:
                     logger.error("Invalid format. Use: lang|character|text")
@@ -815,7 +830,6 @@ def handle_client(conn, addr, processors):
         logger.info(f"Client {addr} disconnected")
 
 
-
 def get_ref_audio_text(character_name):
     """Retrieve reference audio and text from MongoDB for a given character."""
     try:
@@ -839,63 +853,67 @@ def get_ref_audio_text(character_name):
         logger.error(f"❌ Error retrieving reference data for '{character_name}': {e}")
         return None, None  # Handle database errors gracefully
 
+
 def start_server(host, port, processors):
     global server_socket
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.settimeout(1.0)  # 1 second timeout for accept
-    
+
     try:
         # Try binding to the port
         try:
             server_socket.bind((host, port))
         except OSError as e:
             if e.winerror == 10013:  # Windows permission denied
-                logger.error(f"❌ Permission denied on port {port}. Try running as Administrator or use a different port (>1024)")
+                logger.error(
+                    f"❌ Permission denied on port {port}. Try running as Administrator or use a different port (>1024)")
                 logger.info(f"💡 Suggestion: Try port 8888 or 9999 instead of {port}")
                 return
             else:
                 raise e
-                
+
         server_socket.listen(5)
         logger.info(f"🚀 Server started on {host}:{port} - Press Ctrl+C to stop")
-        
+
         while not shutdown_flag.is_set():
             try:
                 conn, addr = server_socket.accept()
                 logger.info(f"🔗 Connected by {addr}")
-                
+
                 # Handle each client in a separate thread
                 client_thread = threading.Thread(
-                    target=handle_client, 
+                    target=handle_client,
                     args=(conn, addr, processors),
                     daemon=True
                 )
                 client_thread.start()
-                
+
             except socket.timeout:
                 continue  # Check shutdown flag and continue
             except Exception as e:
                 if not shutdown_flag.is_set():
                     logger.error(f"Accept error: {e}")
                 break
-                
+
     except Exception as e:
         logger.error(f"Server error: {e}")
     finally:
         cleanup_server()
 
+
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
     logger.info(f"\n🛑 Received signal {signum}, shutting down gracefully...")
     shutdown_flag.set()
-    
+
+
 def cleanup_server():
     """Clean up server resources."""
     global server_socket
-    
+
     logger.info("🧹 Cleaning up server resources...")
-    
+
     # Close server socket
     if server_socket:
         try:
@@ -903,13 +921,13 @@ def cleanup_server():
             logger.info("✅ Server socket closed")
         except Exception as e:
             logger.error(f"Error closing server socket: {e}")
-    
+
     # Close Kafka producers and wait for threads to finish
     kafka_producers = [item for item in active_threads if hasattr(item, 'close')]
     threads = [item for item in active_threads if hasattr(item, 'is_alive')]
-    
+
     logger.info(f"⏳ Cleaning up {len(kafka_producers)} Kafka producers and {len(threads)} threads...")
-    
+
     # Close Kafka producers first
     for producer in kafka_producers:
         try:
@@ -917,7 +935,7 @@ def cleanup_server():
             logger.debug("Kafka producer closed")
         except Exception as e:
             logger.error(f"Error closing Kafka producer: {e}")
-    
+
     # Wait for threads to finish
     for thread in threads:
         try:
@@ -927,22 +945,23 @@ def cleanup_server():
                     logger.warning(f"Thread {thread.name} did not finish in time")
         except Exception as e:
             logger.error(f"Error joining thread: {e}")
-    
+
     # Close MongoDB connection
     try:
         client.close()
         logger.info("✅ MongoDB connection closed")
     except Exception as e:
         logger.error(f"Error closing MongoDB: {e}")
-    
+
     logger.info("🏁 Server shutdown complete")
+
 
 if __name__ == "__main__":
     # Set up signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     if hasattr(signal, 'SIGTERM'):
         signal.signal(signal.SIGTERM, signal_handler)  # Termination signal
-    
+
     try:
         processors = {
             "en": TTSStreamingProcessor(
